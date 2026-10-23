@@ -1,0 +1,72 @@
+name: ai-agents
+
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    stdin_open: true
+    tty: true
+
+    working_dir: /workspace
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    env_file:
+      - ${HOME}/.config/opencode/9router.env
+      - ${HOME}/.config/opencode/go.env
+
+    environment:
+      HOME: /home/agent
+      TERM: xterm-256color
+      COLORTERM: truecolor
+
+      DISPLAY: ${DISPLAY}
+
+      SSH_AUTH_SOCK: /ssh-agent
+
+      GIT_TERMINAL_PROMPT: "0"
+
+      GH_TOKEN: ${GH_TOKEN}
+
+    volumes:
+      # Monorepo only (the whole repository is the workspace).
+      - ${WORKSPACE_DIR:-.}:/workspace
+
+      # Shared OpenCode configuration.
+      - ${HOME}/.config/opencode:/home/agent/.config/opencode
+
+      # Persistent OpenCode sessions/data
+      - opencode-share:/home/agent/.local/share/opencode
+      - opencode-state:/home/agent/.local/state/opencode
+
+      # Persistent Codex
+      - ${HOME}/.config/codex:/home/agent/.codex
+
+      # SSH agent only; private keys are not mounted.
+      - ${SSH_AUTH_SOCK}:/ssh-agent
+
+      # SSH aliases and known hosts.
+      - ${HOME}/.ssh/config:/home/agent/.ssh/config:ro
+      - ${HOME}/.ssh/known_hosts:/home/agent/.ssh/known_hosts:ro
+
+      # X11 clipboard.
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=64m,mode=0755
+
+    restart: "no"
+
+volumes:
+  opencode-share:
+  opencode-state:
