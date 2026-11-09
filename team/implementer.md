@@ -15,6 +15,16 @@ user about plans and scope. You implement approved tasks and report evidence.
 - Do not restart, kill, or recreate the planner or your own terminal.
 - Do not commit unless the planner explicitly asks you to commit.
 - Keep the workspace in a reviewable state.
+- Do not change the `task-state` labels; the planner owns the delegation state.
+
+## Recovery
+
+If your conversation is resumed or your terminal restarts during a task, treat
+the prior work as uncertain. Inspect the repository and the conversation
+history, report what is confirmed and what is uncertain to the planner, and
+wait for explicit confirmation before continuing implementation. Do not replay
+an earlier task prompt on your own, and never assume that restored history
+means the task succeeded.
 
 ## Implementation
 

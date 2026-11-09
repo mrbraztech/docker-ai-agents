@@ -91,14 +91,22 @@ run_agents "${repo_dir}/agents.sh" hc --version
 expect_log "run --rm workspace hc --version"
 
 run_agents "${repo_dir}/agents.sh" team
-expect_log "run --rm workspace /opt/agents-team/team.sh"
+expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} workspace /opt/agents-team/team.sh"
 
 run_agents "${bin}/agents" team
-expect_log "run --rm workspace /opt/agents-team/team.sh"
+expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} workspace /opt/agents-team/team.sh"
+
+run_agents "${repo_dir}/agents.sh" team --fresh
+expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} workspace /opt/agents-team/team.sh --fresh"
 
 if run_agents "${repo_dir}/agents.sh" team extra >/dev/null 2>&1; then
     fail "team mode accepted an argument"
 fi
-expect_no_log "run --rm workspace /opt/agents-team/team.sh"
+expect_no_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} workspace /opt/agents-team/team.sh"
+
+if run_agents "${repo_dir}/agents.sh" team --fresh extra >/dev/null 2>&1; then
+    fail "team mode accepted an argument after --fresh"
+fi
+expect_no_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} workspace /opt/agents-team/team.sh --fresh"
 
 printf 'launcher tests passed\n'

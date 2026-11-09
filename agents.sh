@@ -39,6 +39,7 @@ Commands:
   pi                    Run Pi.
   hc                    Run Herdr Core.
   team                  Start or reattach the planner/implementer team.
+  team --fresh          Start new team conversations without deleting history.
   install [OPTIONS]     Create launchers in ~/.local/bin.
   build                 Build the default agents image.
   <command> [args...]   Run any command inside the container.
@@ -73,6 +74,7 @@ Examples:
   agents opencode
   agents codex --version
   agents team
+  agents team --fresh
   agents --dir ~/src/project opencode
   cd ~/src/project && agents
 EOF
@@ -247,6 +249,8 @@ build_requested=0
 use_project_compose=1
 command=
 have_command=0
+team_mode=0
+team_fresh=0
 
 if [ -n "$launcher_command" ]; then
     command=$launcher_command
@@ -330,9 +334,24 @@ if [ "$subcommand_mode" -eq 1 ]; then
             exit 0
             ;;
         team)
-            [ $# -eq 0 ] || die "team does not accept arguments"
+            while [ $# -gt 0 ]; do
+                case $1 in
+                    --fresh)
+                        team_fresh=1
+                        shift
+                        ;;
+                    *)
+                        die "team only accepts --fresh"
+                        ;;
+                esac
+            done
             command=/opt/agents-team/team.sh
-            set --
+            team_mode=1
+            if [ "$team_fresh" -eq 1 ]; then
+                set -- --fresh
+            else
+                set --
+            fi
             ;;
         help)
             usage
@@ -480,6 +499,16 @@ if [ "$build_requested" -eq 1 ]; then
     build_default_image
 elif [ "$compose_from_project" -eq 0 ]; then
     ensure_default_image
+fi
+
+if [ "$team_mode" -eq 1 ]; then
+    # The canonical host path distinguishes workspaces that are all mounted at
+    # /workspace inside the container.
+    exec docker compose \
+        -f "$compose_file" \
+        --project-directory "$compose_dir" \
+        run --rm -e "AGENTS_TEAM_WORKSPACE_ID=$workspace_dir" \
+        "$service" "$command" "$@"
 fi
 
 exec docker compose \

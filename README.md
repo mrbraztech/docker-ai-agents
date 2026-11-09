@@ -134,6 +134,7 @@ container definition can be run repeatedly without side effects.
 
 ```sh
 /absolute/path/to/agents.sh team
+/absolute/path/to/agents.sh team --fresh
 ```
 
 `team` is opt-in. The default Bash shell and the direct `opencode`, `codex`,
@@ -149,12 +150,12 @@ Core instance inside that container, and exactly two named roles:
   runs the relevant checks, and reports changed files, test results, and
   blockers back to the planner.
 
-The team launcher starts the implementer, starts the planner, and attaches the
-terminal to the planner. Detach with `ctrl+\`. The launcher and its
+The team launcher starts or resumes the implementer and planner and attaches
+the terminal to the planner. Detach with `ctrl+\`. The launcher and its
 `docker compose run` container then exit. Running `agents.sh team` again opens a
-new container, removes any finished role records, and starts or reuses the
-roles there. Live Herdr terminals are reused while that container is running;
-Herdr settings and state remain in the named volumes.
+new container and resumes the native conversations associated with the same
+host workspace and role. Live Herdr terminals are reused while that container is
+running; Herdr settings, terminal labels, and state remain in the named volumes.
 
 The planner must show the plan and ask for explicit approval before any
 implementation handoff. The approval is part of the planner role instructions,
@@ -164,16 +165,76 @@ not a separate approval service.
 
 The launcher checks the live Herdr terminals before starting anything:
 
-- A live terminal named `planner` or `implementer` is reused. It is not
-  restarted, even when it is busy or waiting for input.
-- A finished terminal with one of those names is removed and started again.
+- A live terminal named `planner` or `implementer` is reused only when its
+  `role` and `workspace` labels match the current invocation. A live terminal
+  from another workspace, or one without usable labels, is left untouched and
+  the launcher stops with a clear error instead of attaching to it. Matching
+  live terminals are never restarted, even when they are busy or waiting for
+  input.
+- A terminal with an unknown state is reused only after its role and workspace
+  labels validate. If the state or labels cannot be read or do not match, the
+  launcher stops without attaching to or modifying the terminal.
+- A finished terminal is kept until its replacement terminal has been started
+  and its workspace/role/session labels have been confirmed. A saved session
+  that is being resumed keeps the previous record because the launcher cannot
+  prove that the native TUI loaded it. A new or fresh session removes the
+  previous record of the same workspace and role only after the new labels are
+  confirmed. If previous records cannot be listed, cleanup is skipped and all
+  records are kept.
 - Missing roles are started, so a session that lost only the implementer gets
   it back without restarting the planner.
 
-Herdr's `run --name` also rejects duplicate live names, so a race cannot create
-two live terminals with the same role name. When a container ends, Herdr marks
-its terminals as finished; the next team start removes those records before
-launching the role again.
+The association is stored in supported Herdr terminal labels: `role`,
+`workspace`, `session`, and `task-state`. `agents.sh` passes the canonical host
+workspace path to the container as `AGENTS_TEAM_WORKSPACE_ID`; this keeps
+different host directories distinct even though all of them are mounted at
+`/workspace`. A saved session is reused only when its role, workspace, and ID
+are all valid. A missing, corrupt, stale, or cross-workspace association starts
+a new conversation instead of adopting unrelated history.
+
+Native conversation continuity uses each agent's supported resume mechanism:
+
+- OpenCode is started with `opencode --session <id>`. The ID is generated with
+  the `ses_` prefix when a new conversation is needed.
+- Codex has no CLI flag that chooses the session ID of a new interactive
+  terminal. For a new or fresh Codex session, the launcher first runs
+  `codex exec --json` with a fixed bootstrap instruction that only asks for
+  `READY`, does not inspect or modify the workspace, and starts no work. It
+  captures the exact `thread_id` from the `thread.started` event and requires
+  `turn.completed` to confirm that the bootstrap turn finished; together these
+  events identify the persisted session. It then opens the interactive TUI with
+  `codex resume <id>`. The bootstrap is never used to resume an existing ID and
+  never replays an implementation task.
+
+`agents.sh team --fresh` starts new native conversations for roles that are not
+live. It updates the labels to the new IDs, leaves the previous Codex and
+OpenCode histories in their mounted data directories, and does not kill or
+replace live terminals. If live terminals are present, fresh mode reports that
+they were kept. Finished records are removed only after the new association is
+confirmed.
+
+A saved session ID is resumed by opening `codex resume <id>` explicitly. There
+is no non-mutative signal that proves the TUI loaded the saved thread, so the
+launcher does not claim that transfer succeeded and keeps the previous record.
+If the saved ID is broken, the terminal exits and the user sees a clear resume
+error; the launcher never falls back to `--last`, another session, or an
+automatic replay. Run `agents team --fresh` when a new conversation is wanted.
+For a new ID created by the neutral bootstrap, `thread.started` plus
+`turn.completed` is evidence that Codex persisted the session. OpenCode session
+IDs are checked against `opencode session list` before reuse; a missing ID
+starts a new conversation.
+
+When a terminal ends during a task, Herdr marks it as finished and the native
+conversation remains available. The launcher does not send the previous task
+again. The planner records delegation state in the `task-state` label:
+`in_progress` before delegating, `completed` after validating the report, and
+`in_progress` or `unknown` for interrupted work. The planner must not delegate
+unless both role labels were set to `in_progress`. On recovery, an
+`in_progress`/`unknown` state requires inspecting the repository and history,
+reporting uncertainty, and asking the user for explicit confirmation before
+further implementation. Restored history is never treated as proof that the
+task succeeded.
+
 
 #### Role instructions
 
@@ -214,10 +275,15 @@ No provider-specific model name is hardcoded in the repository.
 #### Persistence and compatibility
 
 Team mode reuses the existing `herdr-config` and `herdr-state` Docker named
-volumes, so Herdr settings and state survive container re-creation. Live
-terminals belong to the container process and are reused only while it is
-running. The existing bind mounts for the project, agent credentials, sessions,
-and SSH agent are unchanged.
+volumes, so Herdr settings, terminal labels, and state survive container
+re-creation. Because that state is shared, a team start refuses to attach to a
+live role whose workspace label does not match the current host workspace. Stop
+that team or run `agents.sh --dir <workspace> team` for the matching directory.
+The native Codex and OpenCode conversations also survive because
+their data directories are bind-mounted. Live terminals belong to the container
+process and are reused only while it is running. `team --fresh` does not delete
+those native histories. The existing bind mounts for the project, agent
+credentials, sessions, and SSH agent are unchanged.
 
 Project compose files continue to work. A project service must use an image
 that extends `agents-base` (directly or through its own Dockerfile), because
@@ -308,6 +374,7 @@ Additional variables are forwarded from the host environment:
 | `AGENTS_OPENCODE_STANDALONE` | Set to `0` to use OpenCode's shared background service.  |
 | `AGENTS_TEAM_PLANNER_MODEL` | Model passed to the team planner (Codex) with `-m`.      |
 | `AGENTS_TEAM_IMPLEMENTER_MODEL` | Model written to the team implementer (OpenCode) config. |
+| `AGENTS_TEAM_WORKSPACE_ID` | Internal: canonical host workspace passed by `agents.sh team`. |
 
 If a `WORKSPACE_DIR` is already exported, `agents.sh` uses it as the workspace
 directory unless `--dir` or `AGENTS_WORKSPACE_DIR` is given.

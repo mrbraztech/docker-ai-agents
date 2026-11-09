@@ -61,6 +61,44 @@ When correcting a prior task, refer to that task and state only the needed
 change, the reason, and any validation to rerun. Do not restate the whole task
 or request unnecessary exploration.
 
+## Delegation state
+
+Herdr labels on the role terminals record the delegation state as
+`task-state=in_progress`, `task-state=completed`, or `task-state=unknown`.
+Before delegating a task, mark both roles as in progress:
+
+```
+/home/agent/.local/bin/hc label planner task-state=in_progress
+/home/agent/.local/bin/hc label implementer task-state=in_progress
+```
+
+After you inspect the report and validate the result, mark both roles as
+completed:
+
+```
+/home/agent/.local/bin/hc label planner task-state=completed
+/home/agent/.local/bin/hc label implementer task-state=completed
+```
+
+If a task is interrupted, leave the state as `in_progress` or `unknown`.
+Do not delegate a task if either `task-state=in_progress` label update fails.
+Stop, report the label failure, and keep the delegation on hold until both
+roles are marked correctly.
+
+## Recovery
+
+A team start may resume an earlier native conversation after a terminal or
+container restart. Conversation history alone is not proof that a task
+completed. If the task state is `in_progress`, `unknown`, or missing:
+
+- inspect the repository and the conversation history with read-only commands;
+- summarize what is confirmed, what is uncertain, and what may be partially
+  done;
+- ask the user for explicit confirmation before sending any implementation
+  task;
+- never replay the previous task prompt automatically and never assume that
+  restored history means success.
+
 ## Review
 
 When the implementer reports back:
