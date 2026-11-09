@@ -2,12 +2,14 @@ name: ai-agents
 
 services:
   workspace:
+    image: agents-base:latest
     build:
       context: .
       dockerfile: Dockerfile
 
     stdin_open: true
     tty: true
+    init: true
 
     working_dir: /workspace
 
@@ -15,13 +17,20 @@ services:
       - "host.docker.internal:host-gateway"
 
     env_file:
-      - ${HOME}/.config/opencode/9router.env
-      - ${HOME}/.config/opencode/go.env
+      - path: ${HOME}/.config/opencode/9router.env
+        required: false
+      - path: ${HOME}/.config/opencode/go.env
+        required: false
 
     environment:
       HOME: /home/agent
       TERM: xterm-256color
       COLORTERM: truecolor
+
+      XDG_CONFIG_HOME: /home/agent/.config
+      XDG_DATA_HOME: /home/agent/.local/share
+      XDG_STATE_HOME: /home/agent/.local/state
+      XDG_CACHE_HOME: /home/agent/.cache
 
       DISPLAY: ${DISPLAY}
 
@@ -31,19 +40,31 @@ services:
 
       GH_TOKEN: ${GH_TOKEN}
 
+      # Team mode model selection. Empty values keep the agent's own default.
+      AGENTS_TEAM_PLANNER_MODEL: ${AGENTS_TEAM_PLANNER_MODEL:-}
+      AGENTS_TEAM_IMPLEMENTER_MODEL: ${AGENTS_TEAM_IMPLEMENTER_MODEL:-}
+
     volumes:
       # Monorepo only (the whole repository is the workspace).
       - ${WORKSPACE_DIR:-.}:/workspace
 
-      # Shared OpenCode configuration.
+      # OpenCode configuration.
       - ${HOME}/.config/opencode:/home/agent/.config/opencode
 
-      # Persistent OpenCode sessions/data
-      - opencode-share:/home/agent/.local/share/opencode
-      - opencode-state:/home/agent/.local/state/opencode
+      # OpenCode credentials, sessions, and state.
+      - ${HOME}/.local/share/opencode:/home/agent/.local/share/opencode
+      - ${HOME}/.local/state/opencode:/home/agent/.local/state/opencode
+      - ${HOME}/.cache/opencode:/home/agent/.cache/opencode
 
-      # Persistent Codex
-      - ${HOME}/.config/codex:/home/agent/.codex
+      # Codex configuration, credentials, history, and sessions.
+      - ${HOME}/.codex:/home/agent/.codex
+
+      # Pi configuration, credentials, and sessions.
+      - ${HOME}/.pi:/home/agent/.pi
+
+      # Herdr Core configuration and state.
+      - herdr-config:/home/agent/.config/herdr-core
+      - herdr-state:/home/agent/.local/state/herdr-core
 
       # SSH agent only; private keys are not mounted.
       - ${SSH_AUTH_SOCK}:/ssh-agent
@@ -68,5 +89,5 @@ services:
     restart: "no"
 
 volumes:
-  opencode-share:
-  opencode-state:
+  herdr-config:
+  herdr-state:

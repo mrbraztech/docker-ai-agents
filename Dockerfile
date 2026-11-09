@@ -3,6 +3,8 @@ FROM debian:bookworm-slim
 ARG USERNAME=agent
 ARG UID=1000
 ARG GID=1000
+ARG NODE_VERSION=22.23.4
+ARG PI_VERSION=1.5.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/${USERNAME}
@@ -26,6 +28,35 @@ RUN apt-get update \
         bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
+# Node.js is required by Pi.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+        amd64) node_arch="x64" ;; \
+        arm64) node_arch="arm64" ;; \
+        *) echo "Unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/node.tar.gz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.gz"; \
+    tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1; \
+    rm -f /tmp/node.tar.gz; \
+    node --version; \
+    npm --version
+
+# Harness: Pi (user data is kept in ~/.pi/agent at runtime).
+RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" \
+    && pi --version
+
+# Harness: Codex (installed system-wide so the mounted ~/.codex holds only
+# configuration, credentials, and sessions).
+RUN set -eux; \
+    curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh; \
+    CODEX_NON_INTERACTIVE=1 \
+    CODEX_INSTALL_DIR=/usr/local/bin \
+    CODEX_HOME=/opt/codex \
+    sh /tmp/codex-install.sh; \
+    rm -f /tmp/codex-install.sh
+
 RUN groupadd --gid "${GID}" "${USERNAME}" \
     && useradd \
         --uid "${UID}" \
@@ -37,28 +68,48 @@ RUN groupadd --gid "${GID}" "${USERNAME}" \
 RUN mkdir -p \
         /workspace \
         /home/${USERNAME}/.config/opencode \
-        /home/${USERNAME}/.cache \
+        /home/${USERNAME}/.cache/opencode \
         /home/${USERNAME}/.local/share/opencode \
         /home/${USERNAME}/.local/state/opencode \
+        /home/${USERNAME}/.codex \
+        /home/${USERNAME}/.pi/agent \
+        /home/${USERNAME}/.config/herdr-core \
+        /home/${USERNAME}/.local/state/herdr-core \
         /home/${USERNAME}/.ssh \
     && chown -R "${USERNAME}:${USERNAME}" \
         /workspace \
         /home/${USERNAME}
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+
+# Team mode: role instructions and the launcher that runs both roles inside
+# one container and one Herdr Core instance.
+COPY team/ /opt/agents-team/
+RUN chmod 0755 /opt/agents-team/team.sh \
+    && ln -s /opt/agents-team/team.sh /usr/local/bin/agents-team
+
 USER ${USERNAME}
 
 WORKDIR /home/${USERNAME}
 
-# Harness: OpenCode
-RUN curl -fsSL https://opencode.ai/install | bash
+# Harness: OpenCode 2 (installed into ~/.opencode/bin).
+RUN set -eux; \
+    curl -fsSL https://opencode.ai/v2/install -o /tmp/opencode-install.sh; \
+    bash /tmp/opencode-install.sh --no-modify-path; \
+    rm -f /tmp/opencode-install.sh
 
-# Harness: Codex
-RUN curl -fsSL https://chatgpt.com/codex/install.sh | \
-    CODEX_NON_INTERACTIVE=1 sh
+# Harness: Herdr Core (installed into ~/.local/bin, which is not mounted).
+RUN set -eux; \
+    curl -fsSL https://releases.herdr.dev/core/install.sh | sh; \
+    hc --version
 
 WORKDIR /workspace
 
 RUN opencode --version \
-    && codex --version
+    && codex --version \
+    && pi --version \
+    && hc --version
 
-CMD ["opencode"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["opencode", "--standalone"]
