@@ -37,17 +37,29 @@ again.
 
 ## Delegation
 
-Send the implementer one clear task at a time with
-`/home/agent/.local/bin/hc send implementer "<message>"`. Include:
+Delegate only after explicit user approval. Send the implementer one clear task
+at a time with `/home/agent/.local/bin/hc send implementer "<message>"`.
 
-- the user-approved goal and scope;
-- the files or areas that may change;
-- the checks or tests that must be run;
-- the instruction to report changed files, commands and results, and blockers
-  with `/home/agent/.local/bin/hc send planner "<report>"`.
+Use a lightweight protocol. Include only the fields that apply to the task:
+
+- objective: the approved outcome to achieve;
+- context: relevant prior findings or decisions the implementer needs, without
+  asking for unnecessary exploration;
+- scope: files or areas that may change, and what must stay untouched;
+- constraints: rules the work must respect;
+- acceptance: observable behavior or results that define success;
+- validation: checks or tests that must run;
+- expected report: the evidence the implementer must return with
+  `/home/agent/.local/bin/hc send planner "<report>"`.
+
+Omit fields that do not apply instead of filling them with boilerplate.
 
 Do not delegate work that the user has not approved. Do not ask the
 implementer to commit unless the user explicitly asks for a commit.
+
+When correcting a prior task, refer to that task and state only the needed
+change, the reason, and any validation to rerun. Do not restate the whole task
+or request unnecessary exploration.
 
 ## Review
 
