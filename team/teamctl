@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+#
+# teamctl - role-to-role communication and delegation state for the agent team.
+#
+# The backend is selected by AGENTS_TEAM_BACKEND:
+#   cli - herdr-core (hc), the console mode
+#   tui - Herdr TUI (herdr), the tabbed terminal mode
+#
+# Commands:
+#   send <role> <text>         Send text to the other role.
+#   wait <role>                Wait until that role is idle, done, or blocked.
+#   read <role> [--lines N]    Read the recent output of that role.
+#   label <role> key=value...  Record delegation state (task-state=...).
+#   get <role> <key>           Print a recorded value.
+
+set -euo pipefail
+
+BACKEND="${AGENTS_TEAM_BACKEND:-cli}"
+STATE_FILE="${AGENTS_TEAM_STATE_FILE:-}"
+WORKSPACE_ID="${AGENTS_TEAM_WORKSPACE_ID:-}"
+HERDR_SESSION="${AGENTS_TEAM_HERDR_SESSION:-}"
+HC_BIN="${AGENTS_TEAM_HC:-/home/agent/.local/bin/hc}"
+HERDR_BIN="${AGENTS_TEAM_HERDR:-/home/agent/.local/bin/herdr}"
+
+die() {
+    printf 'teamctl: error: %s\n' "$*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+herdr_cmd() {
+    if [ -n "$HERDR_SESSION" ]; then
+        "$HERDR_BIN" --session "$HERDR_SESSION" "$@"
+    else
+        "$HERDR_BIN" "$@"
+    fi
+}
+
+require_bin() {
+    [ -x "$1" ] || die "required command not found: $1"
+}
+
+state_default() {
+    printf '%s' '{"version":1,"workspaces":{}}'
+}
+
+read_state() {
+    [ -n "$STATE_FILE" ] || return 1
+    [ -f "$STATE_FILE" ] || {
+        state_default
+        return 0
+    }
+    if ! jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+        # Corrupt state is ignored; the launcher starts a fresh conversation.
+        state_default
+        return 0
+    fi
+    cat "$STATE_FILE"
+}
+
+write_state() {
+    local content=$1 directory temporary
+    [ -n "$STATE_FILE" ] || die "AGENTS_TEAM_STATE_FILE is not set"
+    directory=$(dirname "$STATE_FILE")
+    mkdir -p "$directory"
+    temporary=$(mktemp "${STATE_FILE}.XXXXXX")
+    printf '%s\n' "$content" >"$temporary"
+    mv -f "$temporary" "$STATE_FILE"
+}
+
+update_labels() {
+    local role=$1
+    shift
+    local state updates pair key value
+
+    [ -n "$WORKSPACE_ID" ] || die "AGENTS_TEAM_WORKSPACE_ID is not set"
+    state=$(read_state)
+    updates='{}'
+    for pair in "$@"; do
+        key=${pair%%=*}
+        value=${pair#*=}
+        [ "$key" != "$pair" ] || die "label must be key=value: ${pair}"
+        updates=$(jq -c --arg key "$key" --arg value "$value" \
+            '. + {($key): $value}' <<<"$updates")
+    done
+
+    state=$(printf '%s' "$state" | jq -c \
+        --arg workspace "$WORKSPACE_ID" \
+        --arg role "$role" \
+        --argjson updates "$updates" '
+        .version = (.version // 1) |
+        .workspaces = (.workspaces // {}) |
+        .workspaces[$workspace] = (.workspaces[$workspace] // {}) |
+        .workspaces[$workspace][$role] =
+            ((.workspaces[$workspace][$role] // {}) + $updates)
+        ')
+    write_state "$state"
+}
+
+get_label() {
+    local role=$1 key=$2 state
+    [ -n "$WORKSPACE_ID" ] || return 1
+    state=$(read_state)
+    printf '%s' "$state" | jq -r \
+        --arg workspace "$WORKSPACE_ID" --arg role "$role" --arg key "$key" \
+        '.workspaces[$workspace][$role][$key] // empty'
+}
+
+usage() {
+    sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+command_name=${1:-}
+case "$command_name" in
+    send)
+        role=${2:-}
+        text=${3:-}
+        [ -n "$role" ] && [ -n "$text" ] ||
+            die "usage: teamctl send <role> <text>"
+        case "$BACKEND" in
+            cli)
+                require_bin "$HC_BIN"
+                exec "$HC_BIN" send "$role" "$text"
+                ;;
+            tui)
+                require_bin "$HERDR_BIN"
+                herdr_cmd agent prompt "$role" "$text"
+                ;;
+            *)
+                die "unknown backend: ${BACKEND}"
+                ;;
+        esac
+        ;;
+    wait)
+        role=${2:-}
+        [ -n "$role" ] || die "usage: teamctl wait <role>"
+        case "$BACKEND" in
+            cli)
+                require_bin "$HC_BIN"
+                exec "$HC_BIN" wait "$role"
+                ;;
+            tui)
+                require_bin "$HERDR_BIN"
+                herdr_cmd agent wait "$role"
+                ;;
+            *)
+                die "unknown backend: ${BACKEND}"
+                ;;
+        esac
+        ;;
+    read)
+        role=${2:-}
+        shift 2 || true
+        lines=60
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --lines)
+                    [ $# -ge 2 ] || die "--lines requires a value"
+                    lines=$2
+                    shift 2
+                    ;;
+                --lines=*)
+                    lines=${1#*=}
+                    shift
+                    ;;
+                *)
+                    die "unknown read option: $1"
+                    ;;
+            esac
+        done
+        [ -n "$role" ] || die "usage: teamctl read <role> [--lines N]"
+        case "$BACKEND" in
+            cli)
+                require_bin "$HC_BIN"
+                exec "$HC_BIN" read "$role" --lines "$lines"
+                ;;
+            tui)
+                require_bin "$HERDR_BIN"
+                herdr_cmd agent read "$role" --source recent --lines "$lines"
+                ;;
+            *)
+                die "unknown backend: ${BACKEND}"
+                ;;
+        esac
+        ;;
+    label)
+        role=${2:-}
+        [ -n "$role" ] || die "usage: teamctl label <role> key=value..."
+        shift 2
+        [ $# -gt 0 ] || die "label requires at least one key=value"
+        case "$BACKEND" in
+            cli)
+                require_bin "$HC_BIN"
+                exec "$HC_BIN" label "$role" "$@"
+                ;;
+            tui)
+                require_command jq
+                update_labels "$role" "$@"
+                ;;
+            *)
+                die "unknown backend: ${BACKEND}"
+                ;;
+        esac
+        ;;
+    get)
+        role=${2:-}
+        key=${3:-}
+        [ -n "$role" ] && [ -n "$key" ] ||
+            die "usage: teamctl get <role> <key>"
+        case "$BACKEND" in
+            cli)
+                require_bin "$HC_BIN"
+                "$HC_BIN" get "$role" --json | jq -r --arg key "$key" \
+                    '.labels[$key] // empty'
+                ;;
+            tui)
+                require_command jq
+                get_label "$role" "$key"
+                ;;
+            *)
+                die "unknown backend: ${BACKEND}"
+                ;;
+        esac
+        ;;
+    -h | --help | help | "")
+        usage
+        ;;
+    *)
+        die "unknown command: ${command_name}"
+        ;;
+esac

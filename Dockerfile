@@ -75,6 +75,8 @@ RUN mkdir -p \
         /home/${USERNAME}/.pi/agent \
         /home/${USERNAME}/.config/herdr-core \
         /home/${USERNAME}/.local/state/herdr-core \
+        /home/${USERNAME}/.config/herdr \
+        /home/${USERNAME}/.local/state/herdr \
         /home/${USERNAME}/.ssh \
     && chown -R "${USERNAME}:${USERNAME}" \
         /workspace \
@@ -83,10 +85,11 @@ RUN mkdir -p \
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
-# Team mode: role instructions and the launcher that runs both roles inside
-# one container and one Herdr Core instance.
+# Team mode: role instructions and the CLI/TUI launchers.
 COPY team/ /opt/agents-team/
 RUN chmod 0755 /opt/agents-team/team.sh \
+        /opt/agents-team/tui.sh \
+        /opt/agents-team/teamctl \
     && ln -s /opt/agents-team/team.sh /usr/local/bin/agents-team
 
 USER ${USERNAME}
@@ -104,12 +107,19 @@ RUN set -eux; \
     curl -fsSL https://releases.herdr.dev/core/install.sh | sh; \
     hc --version
 
+# Herdr TUI: a separate terminal application/server with spaces, tabs, and
+# panes. It does not share running agents with herdr-core.
+RUN set -eux; \
+    curl -fsSL https://herdr.dev/install.sh | sh; \
+    herdr --version
+
 WORKDIR /workspace
 
 RUN opencode --version \
     && codex --version \
     && pi --version \
-    && hc --version
+    && hc --version \
+    && herdr --version
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["opencode", "--standalone"]

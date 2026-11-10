@@ -16,6 +16,9 @@ home="${tmp}/home"
 
 mkdir -p "$project" "$bin" "$home"
 
+container_key=$(printf '%s' "$project" | sha256sum | cut -c1-16)
+container_workspace="/workspaces/${container_key}"
+
 cat >"${bin}/docker" <<'STUB'
 #!/usr/bin/env bash
 
@@ -79,34 +82,39 @@ expect_no_log() {
 }
 
 run_agents "${repo_dir}/agents.sh"
-expect_log "run --rm workspace bash"
+expect_log "run --rm --workdir ${container_workspace} --volume ${project}:${container_workspace} workspace bash"
 
 run_agents "${repo_dir}/agents.sh" opencode --version
-expect_log "run --rm workspace opencode --standalone --version"
+expect_log "run --rm --workdir ${container_workspace} --volume ${project}:${container_workspace} workspace opencode --standalone --version"
 
 run_agents "${repo_dir}/agents.sh" codex --version
-expect_log "run --rm workspace codex --version"
+expect_log "run --rm --workdir ${container_workspace} --volume ${project}:${container_workspace} workspace codex --version"
 
 run_agents "${repo_dir}/agents.sh" hc --version
-expect_log "run --rm workspace hc --version"
+expect_log "run --rm --workdir ${container_workspace} --volume ${project}:${container_workspace} workspace hc --version"
+
+team_prefix="run --rm --workdir ${container_workspace} --volume ${project}:${container_workspace} -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_WORKSPACE=${container_workspace} -e AGENTS_TEAM_BACKEND=tui -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh"
 
 run_agents "${repo_dir}/agents.sh" team
-expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh"
+expect_log "$team_prefix"
 
 run_agents "${bin}/agents" team
-expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh"
+expect_log "$team_prefix"
 
 run_agents "${repo_dir}/agents.sh" team --fresh
-expect_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh --fresh"
+expect_log "$team_prefix --fresh"
+
+run_agents "${repo_dir}/agents.sh" team --cli
+expect_log "${team_prefix/tui/cli}"
 
 if run_agents "${repo_dir}/agents.sh" team extra >/dev/null 2>&1; then
     fail "team mode accepted an argument"
 fi
-expect_no_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh"
+expect_no_log "$team_prefix"
 
 if run_agents "${repo_dir}/agents.sh" team --fresh extra >/dev/null 2>&1; then
     fail "team mode accepted an argument after --fresh"
 fi
-expect_no_log "run --rm -e AGENTS_TEAM_WORKSPACE_ID=${project} -e AGENTS_TEAM_CODEX_SANDBOX=auto workspace /opt/agents-team/team.sh --fresh"
+expect_no_log "$team_prefix --fresh"
 
 printf 'launcher tests passed\n'

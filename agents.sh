@@ -39,6 +39,7 @@ Commands:
   pi                    Run Pi.
   hc                    Run Herdr Core.
   team                  Start or reattach the planner/implementer team.
+  team --cli            Use the CLI console instead of the Herdr TUI.
   team --fresh          Start new team conversations without deleting history.
   install [OPTIONS]     Create launchers in ~/.local/bin.
   build                 Build the default agents image.
@@ -71,12 +72,14 @@ Environment:
   AGENTS_TEAM_CODEX_SANDBOX
                         Codex sandbox: auto, default, read-only,
                         workspace-write, or danger-full-access.
+  AGENTS_TEAM_BACKEND   Team UI: tui (default) or cli.
 
 Examples:
   agents
   agents opencode
   agents codex --version
   agents team
+  agents team --cli
   agents team --fresh
   agents --dir ~/src/project opencode
   cd ~/src/project && agents
@@ -103,6 +106,16 @@ resolve_self() {
 
 abs_dir() {
     CDPATH= cd -- "$1" && pwd -P
+}
+
+workspace_key() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | cut -c1-16
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | cut -c1-16
+    else
+        cksum | tr ' ' '-' | cut -c1-16
+    fi
 }
 
 find_compose_up() {
@@ -254,6 +267,7 @@ command=
 have_command=0
 team_mode=0
 team_fresh=0
+team_backend=${AGENTS_TEAM_BACKEND:-tui}
 
 if [ -n "$launcher_command" ]; then
     command=$launcher_command
@@ -343,8 +357,16 @@ if [ "$subcommand_mode" -eq 1 ]; then
                         team_fresh=1
                         shift
                         ;;
+                    --cli)
+                        team_backend=cli
+                        shift
+                        ;;
+                    --tui)
+                        team_backend=tui
+                        shift
+                        ;;
                     *)
-                        die "team only accepts --fresh"
+                        die "team only accepts --fresh, --cli, or --tui"
                         ;;
                 esac
             done
@@ -484,6 +506,13 @@ fi
 
 export WORKSPACE_DIR="$workspace_dir"
 
+# Every host workspace gets a distinct in-container path. OpenCode identifies
+# projects by the working directory, so sharing /workspace would make separate
+# host directories share one project and its session picker.
+workspace_id=$(printf '%s' "$workspace_dir" | workspace_key)
+container_workspace="/workspaces/${workspace_id}"
+export AGENTS_TEAM_CONTAINER_WORKSPACE="$container_workspace"
+
 if [ -z "${SSH_AUTH_SOCK:-}" ] || [ ! -S "$SSH_AUTH_SOCK" ]; then
     warn "SSH_AUTH_SOCK is not a running SSH agent; continuing without SSH forwarding"
     SSH_AUTH_SOCK=/dev/null
@@ -511,7 +540,12 @@ if [ "$team_mode" -eq 1 ]; then
     exec docker compose \
         -f "$compose_file" \
         --project-directory "$compose_dir" \
-        run --rm -e "AGENTS_TEAM_WORKSPACE_ID=$workspace_dir" \
+        run --rm \
+        --workdir "$container_workspace" \
+        --volume "$workspace_dir:$container_workspace" \
+        -e "AGENTS_TEAM_WORKSPACE_ID=$workspace_dir" \
+        -e "AGENTS_TEAM_WORKSPACE=$container_workspace" \
+        -e "AGENTS_TEAM_BACKEND=$team_backend" \
         -e "AGENTS_TEAM_CODEX_SANDBOX=$AGENTS_TEAM_CODEX_SANDBOX" \
         "$service" "$command" "$@"
 fi
@@ -519,4 +553,7 @@ fi
 exec docker compose \
     -f "$compose_file" \
     --project-directory "$compose_dir" \
-    run --rm "$service" "$command" "$@"
+    run --rm \
+    --workdir "$container_workspace" \
+    --volume "$workspace_dir:$container_workspace" \
+    "$service" "$command" "$@"

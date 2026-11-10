@@ -24,6 +24,7 @@ PLANNER_MODEL="${AGENTS_TEAM_PLANNER_MODEL:-}"
 IMPLEMENTER_MODEL="${AGENTS_TEAM_IMPLEMENTER_MODEL:-}"
 CODEX_SANDBOX_MODE="${AGENTS_TEAM_CODEX_SANDBOX:-auto}"
 CODEX_SANDBOX_ARGS=()
+TEAM_BACKEND="${AGENTS_TEAM_BACKEND:-cli}"
 
 FRESH=0
 TASK_STATE_LABEL="task-state"
@@ -37,6 +38,17 @@ die() {
     printf 'agents-team: error: %s\n' "$*" >&2
     exit 1
 }
+
+case "$TEAM_BACKEND" in
+    tui)
+        exec "${TEAM_DIR}/tui.sh" "$@"
+        ;;
+    cli)
+        ;;
+    *)
+        die "unknown team backend: ${TEAM_BACKEND}"
+        ;;
+esac
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
