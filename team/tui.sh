@@ -18,8 +18,9 @@ IMPLEMENTER_NAME="implementer"
 WORKSPACE="${AGENTS_TEAM_WORKSPACE:-/workspace}"
 WORKSPACE_ID="${AGENTS_TEAM_WORKSPACE_ID:-}"
 RUNTIME_DIR="${AGENTS_TEAM_RUNTIME_DIR:-${TMPDIR:-/tmp}/agents-team}"
-STATE_DIR="${AGENTS_TEAM_STATE_DIR:-${HOME}/.config/herdr/agents-team}"
+STATE_DIR="${AGENTS_TEAM_STATE_DIR:-${HOME}/.local/state/agents-team}"
 STATE_FILE="${STATE_DIR}/state.json"
+LEGACY_STATE_FILE="${HOME}/.config/herdr/agents-team/state.json"
 
 PLANNER_MODEL="${AGENTS_TEAM_PLANNER_MODEL:-}"
 IMPLEMENTER_MODEL="${AGENTS_TEAM_IMPLEMENTER_MODEL:-}"
@@ -95,6 +96,12 @@ state_default() {
 }
 
 read_state() {
+    if [ ! -f "$STATE_FILE" ] && [ -f "$LEGACY_STATE_FILE" ] &&
+        jq -e 'type == "object"' "$LEGACY_STATE_FILE" >/dev/null 2>&1; then
+        mkdir -p "$STATE_DIR"
+        cp "$LEGACY_STATE_FILE" "$STATE_FILE"
+        log "migrated legacy TUI state into ${STATE_FILE}"
+    fi
     [ -f "$STATE_FILE" ] || {
         state_default
         return 0

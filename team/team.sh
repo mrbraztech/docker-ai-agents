@@ -19,6 +19,9 @@ IMPLEMENTER_NAME="implementer"
 WORKSPACE="${AGENTS_TEAM_WORKSPACE:-/workspace}"
 WORKSPACE_ID="${AGENTS_TEAM_WORKSPACE_ID:-}"
 RUNTIME_DIR="${AGENTS_TEAM_RUNTIME_DIR:-${TMPDIR:-/tmp}/agents-team}"
+STATE_DIR="${AGENTS_TEAM_STATE_DIR:-${HOME}/.local/state/agents-team}"
+STATE_FILE="${STATE_DIR}/state.json"
+LEGACY_STATE_FILE="${HOME}/.config/herdr/agents-team/state.json"
 
 PLANNER_MODEL="${AGENTS_TEAM_PLANNER_MODEL:-}"
 IMPLEMENTER_MODEL="${AGENTS_TEAM_IMPLEMENTER_MODEL:-}"
@@ -150,6 +153,66 @@ task_state_of() {
     esac
 
     printf '%s' "$state"
+}
+
+state_default() {
+    printf '%s' '{"version":1,"workspaces":{}}'
+}
+
+read_shared_state() {
+    [ -n "$STATE_FILE" ] || return 1
+    if [ -f "$STATE_FILE" ]; then
+        if jq -e 'type == "object"' "$STATE_FILE" >/dev/null 2>&1; then
+            cat "$STATE_FILE"
+        else
+            log "shared state is corrupt; ignoring ${STATE_FILE}"
+            state_default
+        fi
+        return 0
+    fi
+    if [ -f "$LEGACY_STATE_FILE" ] &&
+        jq -e 'type == "object"' "$LEGACY_STATE_FILE" >/dev/null 2>&1; then
+        mkdir -p "$STATE_DIR"
+        cp "$LEGACY_STATE_FILE" "$STATE_FILE"
+        log "migrated legacy TUI state into ${STATE_FILE}"
+        cat "$STATE_FILE"
+        return 0
+    fi
+    state_default
+}
+
+write_shared_state() {
+    local content=$1 directory temporary
+
+    [ -n "$STATE_FILE" ] || return 1
+    directory=$(dirname "$STATE_FILE")
+    mkdir -p "$directory"
+    temporary=$(mktemp "${STATE_FILE}.XXXXXX")
+    printf '%s\n' "$content" >"$temporary"
+    mv -f "$temporary" "$STATE_FILE"
+}
+
+state_get() {
+    local role=$1 key=$2
+    [ -n "$WORKSPACE_ID" ] || return 0
+    read_shared_state | jq -r \
+        --arg workspace "$WORKSPACE_ID" --arg role "$role" --arg key "$key" \
+        '.workspaces[$workspace][$role][$key] // empty'
+}
+
+state_set() {
+    local role=$1 key=$2 value=$3 content
+    [ -n "$WORKSPACE_ID" ] || return 0
+    content=$(read_shared_state | jq -c \
+        --arg workspace "$WORKSPACE_ID" --arg role "$role" \
+        --arg key "$key" --arg value "$value" '
+        .version = (.version // 1) |
+        .workspaces = (.workspaces // {}) |
+        .workspaces[$workspace] = (.workspaces[$workspace] // {}) |
+        .workspaces[$workspace][$role] =
+            ((.workspaces[$workspace][$role] // {}) + {($key): $value})
+        ')
+    write_shared_state "$content"
 }
 
 valid_session() {
@@ -517,6 +580,7 @@ remove_previous_records() {
 
 ensure_role() {
     local name=$1 role=$2 agent=$3 candidate=$4 old_output=$5
+    local requested_task_state=${6:-unknown}
     local state old_address task_state session output address resumed=0
     local old_workspace live_role live_workspace unknown_role unknown_workspace
 
@@ -556,8 +620,11 @@ ensure_role() {
     esac
 
     old_address=$(record_field "$old_output" address)
-    task_state=$(task_state_of "$old_output")
-    [ -n "$old_output" ] || task_state="unknown"
+    task_state=$requested_task_state
+    case "$task_state" in
+        in_progress | completed) ;;
+        *) task_state="unknown" ;;
+    esac
 
     if [ -n "$old_output" ] && [ -n "$WORKSPACE_ID" ]; then
         old_workspace=$(label_value "$old_output" workspace)
@@ -640,6 +707,9 @@ ensure_role() {
         fi
     fi
 
+    state_set "$role" session "$session"
+    state_set "$role" "$TASK_STATE_LABEL" "$task_state"
+
     if [ "$task_state" != "completed" ]; then
         log "${name} task state=${task_state}: inspect the repository and conversation history, report uncertainty, and ask the user for explicit confirmation before continuing implementation"
     fi
@@ -659,6 +729,9 @@ main() {
     local implementer_output planner_output
     local implementer_candidate planner_candidate
     local implementer_sessions planner_sessions
+    local implementer_json planner_json implementer_task planner_task
+    local implementer_labels planner_labels
+    local implementer_from_shared=0 planner_from_shared=0
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -688,33 +761,105 @@ main() {
         log "workspace identity is unavailable; saved conversations will not be reused"
     fi
 
+    export AGENTS_TEAM_BACKEND=cli
+    export AGENTS_TEAM_STATE_DIR="$STATE_DIR"
+    export AGENTS_TEAM_STATE_FILE="$STATE_FILE"
+    export AGENTS_TEAM_WORKSPACE_ID="$WORKSPACE_ID"
+
     hc server start >/dev/null
     mkdir -p "$RUNTIME_DIR"
 
     implementer_output=$(hc get "$IMPLEMENTER_NAME" --json 2>/dev/null || true)
     planner_output=$(hc get "$PLANNER_NAME" --json 2>/dev/null || true)
 
-    implementer_candidate=$(candidate_session implementer opencode "$implementer_output")
-    planner_candidate=$(candidate_session planner codex "$planner_output")
+    implementer_labels=$(candidate_session implementer opencode "$implementer_output")
+    planner_labels=$(candidate_session planner codex "$planner_output")
+
+    implementer_json=$(state_get implementer session)
+    planner_json=$(state_get planner session)
+    implementer_task=$(state_get implementer "$TASK_STATE_LABEL")
+    planner_task=$(state_get planner "$TASK_STATE_LABEL")
+
+    if [ -n "$implementer_json" ] &&
+        ! valid_session opencode "$implementer_json"; then
+        log "shared implementer session is invalid; ignoring it"
+        implementer_json=""
+    fi
+    if [ -n "$planner_json" ] &&
+        ! valid_session codex "$planner_json"; then
+        log "shared planner session is invalid; ignoring it"
+        planner_json=""
+    fi
+
+    if [ -n "$implementer_json" ]; then
+        implementer_candidate=$implementer_json
+        implementer_from_shared=1
+        [ -n "$implementer_task" ] || implementer_task="unknown"
+        if [ -n "$implementer_labels" ] &&
+            [ "$implementer_labels" != "$implementer_json" ]; then
+            log "shared implementer state differs from terminal labels; using the shared state"
+        fi
+    elif [ -n "$implementer_labels" ]; then
+        implementer_candidate=$implementer_labels
+        implementer_task=$(task_state_of "$implementer_output")
+        state_set implementer session "$implementer_labels"
+        state_set implementer "$TASK_STATE_LABEL" "$implementer_task"
+        log "migrated implementer session from terminal labels to shared state"
+    else
+        implementer_candidate=""
+        implementer_task="unknown"
+    fi
+
+    if [ -n "$planner_json" ]; then
+        planner_candidate=$planner_json
+        planner_from_shared=1
+        [ -n "$planner_task" ] || planner_task="unknown"
+        if [ -n "$planner_labels" ] && [ "$planner_labels" != "$planner_json" ]; then
+            log "shared planner state differs from terminal labels; using the shared state"
+        fi
+    elif [ -n "$planner_labels" ]; then
+        planner_candidate=$planner_labels
+        planner_task=$(task_state_of "$planner_output")
+        state_set planner session "$planner_labels"
+        state_set planner "$TASK_STATE_LABEL" "$planner_task"
+        log "migrated planner session from terminal labels to shared state"
+    else
+        planner_candidate=""
+        planner_task="unknown"
+    fi
 
     if ! implementer_sessions=$(distinct_saved_sessions "$IMPLEMENTER_NAME" implementer); then
-        log "could not inspect saved ${IMPLEMENTER_NAME} sessions; starting a new conversation"
-        implementer_candidate=""
+        if [ "$implementer_from_shared" -eq 1 ]; then
+            log "could not inspect legacy ${IMPLEMENTER_NAME} terminals; keeping shared session"
+        else
+            log "could not inspect saved ${IMPLEMENTER_NAME} sessions; starting a new conversation"
+            implementer_candidate=""
+            implementer_task="unknown"
+        fi
         implementer_sessions=0
     fi
     if ! planner_sessions=$(distinct_saved_sessions "$PLANNER_NAME" planner); then
-        log "could not inspect saved ${PLANNER_NAME} sessions; starting a new conversation"
-        planner_candidate=""
+        if [ "$planner_from_shared" -eq 1 ]; then
+            log "could not inspect legacy ${PLANNER_NAME} terminals; keeping shared session"
+        else
+            log "could not inspect saved ${PLANNER_NAME} sessions; starting a new conversation"
+            planner_candidate=""
+            planner_task="unknown"
+        fi
         planner_sessions=0
     fi
 
-    if [ -n "$implementer_sessions" ] && [ "$implementer_sessions" -gt 1 ]; then
+    if [ "$implementer_from_shared" -eq 0 ] &&
+        [ -n "$implementer_sessions" ] && [ "$implementer_sessions" -gt 1 ]; then
         log "ambiguous session association for ${IMPLEMENTER_NAME}; starting a new conversation"
         implementer_candidate=""
+        implementer_task="unknown"
     fi
-    if [ -n "$planner_sessions" ] && [ "$planner_sessions" -gt 1 ]; then
+    if [ "$planner_from_shared" -eq 0 ] &&
+        [ -n "$planner_sessions" ] && [ "$planner_sessions" -gt 1 ]; then
         log "ambiguous session association for ${PLANNER_NAME}; starting a new conversation"
         planner_candidate=""
+        planner_task="unknown"
     fi
 
     if [ -n "$implementer_candidate" ] &&
@@ -722,12 +867,14 @@ main() {
         log "ambiguous session association: both roles reference ${implementer_candidate}; starting new conversations"
         implementer_candidate=""
         planner_candidate=""
+        implementer_task="unknown"
+        planner_task="unknown"
     fi
 
     ensure_role "$IMPLEMENTER_NAME" implementer opencode \
-        "$implementer_candidate" "$implementer_output"
+        "$implementer_candidate" "$implementer_output" "$implementer_task"
     ensure_role "$PLANNER_NAME" planner codex \
-        "$planner_candidate" "$planner_output"
+        "$planner_candidate" "$planner_output" "$planner_task"
 
     report_status
 

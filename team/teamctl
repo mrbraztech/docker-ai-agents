@@ -194,7 +194,12 @@ case "$command_name" in
         case "$BACKEND" in
             cli)
                 require_bin "$HC_BIN"
-                exec "$HC_BIN" label "$role" "$@"
+                "$HC_BIN" label "$role" "$@" >/dev/null ||
+                    die "hc label failed"
+                if [ -n "$STATE_FILE" ] && [ -n "$WORKSPACE_ID" ]; then
+                    require_command jq
+                    update_labels "$role" "$@"
+                fi
                 ;;
             tui)
                 require_command jq
@@ -213,6 +218,14 @@ case "$command_name" in
         case "$BACKEND" in
             cli)
                 require_bin "$HC_BIN"
+                if [ -n "$STATE_FILE" ] && [ -n "$WORKSPACE_ID" ]; then
+                    require_command jq
+                    value=$(get_label "$role" "$key")
+                    if [ -n "$value" ]; then
+                        printf '%s\n' "$value"
+                        exit 0
+                    fi
+                fi
                 "$HC_BIN" get "$role" --json | jq -r --arg key "$key" \
                     '.labels[$key] // empty'
                 ;;

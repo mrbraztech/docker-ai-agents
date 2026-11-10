@@ -189,14 +189,15 @@ The TUI backend uses the `herdr` server with a named session derived from the
 host workspace. It creates one workspace with one tab split left/right into
 two native agent panes. The launcher removes the previous TUI session for that
 workspace before each start so a stale layout cannot leave dead panes behind,
-then reattaches the native agent sessions by ID. Herdr TUI configuration and
-`teamctl` delegation state live in the `herdr-tui-config` and
-`herdr-tui-state` named volumes.
+then reattaches the native agent sessions by ID. Herdr TUI configuration lives
+in the `herdr-tui-config` and `herdr-tui-state` named volumes. The shared
+session/delegation state used by both backends lives in `agents-team-state`.
 
 `teamctl` is the role-facing command in both backends. In TUI mode it maps
 `send`, `wait`, and `read` to `herdr agent prompt`, `herdr agent wait`, and
-`herdr agent read`. Delegation state is stored in the TUI state file and read
-by the launcher on the next start.
+`herdr agent read`. Delegation state is stored in the shared state file and
+read by the launcher on the next start. The CLI backend also mirrors the state
+to herdr-core labels and migrates pre-existing labels into the shared file.
 
 #### CLI sessions and lifecycle
 
@@ -332,14 +333,20 @@ the probe.
 
 Team mode persists its state in Docker named volumes. The CLI backend uses
 `herdr-config` and `herdr-state`; the TUI backend uses `herdr-tui-config` and
-`herdr-tui-state`. Because the CLI state is shared, a team start refuses to
-attach to a live role whose workspace label does not match the current host
+`herdr-tui-state`. Both backends share native session IDs and delegation state
+through `agents-team-state`, so switching between `--cli` and TUI resumes the
+same Codex/OpenCode conversations. The CLI migrates session IDs from its
+existing herdr-core labels into the shared state when it starts; the TUI also
+migrates its previous local state file on first use.
+
+Because the CLI live-terminal state is shared, a team start refuses to attach
+to a live role whose workspace label does not match the current host
 workspace. Stop that team or run `agents.sh --dir <workspace> team` for the
-matching directory. The native Codex and OpenCode conversations also survive
-because their data directories are bind-mounted. Live terminals belong to the
-container process and are reused only while it is running. `team --fresh` does
-not delete those native histories. The existing bind mounts for the project,
-agent credentials, sessions, and SSH agent are unchanged.
+matching directory. Native conversations from the older `/workspace` OpenCode
+project remain in the database but are not listed under the new
+`/workspaces/<key>` project; use the old working directory or an explicit
+export/import to reach them. The native Codex and OpenCode data directories
+remain bind-mounted, and `team --fresh` does not delete that history.
 
 Project compose files continue to work. A project service must use an image
 that extends `agents-base` (directly or through its own Dockerfile), because
@@ -383,6 +390,7 @@ Herdr uses Docker named volumes:
 | `herdr-state`       | `/home/agent/.local/state/herdr-core`   | Herdr Core runtime state.      |
 | `herdr-tui-config`  | `/home/agent/.config/herdr`             | Herdr TUI settings and layout. |
 | `herdr-tui-state`   | `/home/agent/.local/state/herdr`        | Herdr TUI runtime state.       |
+| `agents-team-state` | `/home/agent/.local/state/agents-team`  | Shared team session/delegation state. |
 
 The named volumes survive `docker compose down`. Remove them with
 `docker compose down -v`.

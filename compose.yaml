@@ -66,6 +66,9 @@ services:
       - herdr-config:/home/agent/.config/herdr-core
       - herdr-state:/home/agent/.local/state/herdr-core
 
+      # Shared team session/delegation state for CLI and TUI backends.
+      - agents-team-state:/home/agent/.local/state/agents-team
+
       # Herdr TUI configuration, layout, and state.
       - herdr-tui-config:/home/agent/.config/herdr
       - herdr-tui-state:/home/agent/.local/state/herdr
@@ -97,3 +100,4 @@ volumes:
   herdr-state:
   herdr-tui-config:
   herdr-tui-state:
+  agents-team-state:

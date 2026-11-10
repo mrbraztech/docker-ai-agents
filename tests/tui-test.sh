@@ -364,6 +364,24 @@ grep -Fq "agent read implementer --source recent --lines 12" "$herdr_log" ||
 ) | grep -Fxq "completed" ||
     fail "teamctl get did not read the state file"
 
+# CLI teamctl writes the same shared state that the TUI reads.
+(
+    export AGENTS_TEAM_BACKEND=cli
+    export AGENTS_TEAM_STATE_FILE="$state/state.json"
+    export AGENTS_TEAM_WORKSPACE_ID="$AGENTS_TEAM_WORKSPACE_ID"
+    "${repo_dir}/team/teamctl" label implementer task-state=in_progress
+) || fail "teamctl CLI label failed"
+grep -Fq "hc label implementer task-state=in_progress" "$hc_log" ||
+    fail "teamctl CLI label did not use hc"
+[ "$(state_value implementer task-state)" = "in_progress" ] ||
+    fail "teamctl CLI label did not update shared state"
+(
+    export AGENTS_TEAM_BACKEND=tui
+    export AGENTS_TEAM_STATE_FILE="$state/state.json"
+    "${repo_dir}/team/teamctl" get implementer task-state
+) | grep -Fxq "in_progress" ||
+    fail "TUI did not read state written by the CLI backend"
+
 # CLI backend keeps the herdr-core commands.
 (
     export AGENTS_TEAM_BACKEND=cli

@@ -433,6 +433,7 @@ export AGENTS_TEAM_WORKSPACE="${repo_dir}"
 export AGENTS_TEAM_WORKSPACE_ID="/host/projects/team"
 export AGENTS_TEAM_RUNTIME_DIR="${runtime}"
 export AGENTS_TEAM_CODEX_SANDBOX="danger-full-access"
+export AGENTS_TEAM_STATE_DIR="${tmp}/shared-state"
 
 unset AGENTS_TEAM_PLANNER_MODEL || true
 unset AGENTS_TEAM_IMPLEMENTER_MODEL || true
@@ -537,6 +538,13 @@ address_of() {
     record_for "$1" | jq -r '.address // empty'
 }
 
+shared_value() {
+    jq -r --arg workspace "/host/projects/team" \
+        --arg role "$1" --arg key "$2" \
+        '.workspaces[$workspace][$role][$key] // empty' \
+        "${tmp}/shared-state/state.json"
+}
+
 finish_terminal() {
     local file
     file="${state}/$(address_of "$1").json"
@@ -573,6 +581,7 @@ reset_state() {
         "${state}"/*.state
     rm -f "${tmp}/codex-state/threads" "${tmp}/codex-state/counter" \
         "${tmp}/opencode-state/sessions"
+    rm -f "${tmp}/shared-state/state.json"
     unset STUB_HC_GET_JSON STUB_HC_STATUS STUB_HC_RUN_FAIL \
         STUB_HC_RUN_FINISHED STUB_HC_STRIP_RUN_LABELS STUB_HC_LABEL_FAIL \
         STUB_HC_STATE_OVERRIDE STUB_HC_LS_FAIL STUB_BWRAP_OK \
@@ -631,6 +640,14 @@ printf '%s' "$planner_session" |
     fail "new planner task state must be unknown"
 expect_team_log "implementer task state=unknown"
 expect_team_log "planner task state=unknown"
+[ "$(shared_value implementer session)" = "$implementer_session" ] ||
+    fail "shared implementer session was not stored"
+[ "$(shared_value planner session)" = "$planner_session" ] ||
+    fail "shared planner session was not stored"
+[ "$(shared_value implementer task-state)" = "unknown" ] ||
+    fail "shared implementer task state was not stored"
+[ "$(shared_value planner task-state)" = "unknown" ] ||
+    fail "shared planner task state was not stored"
 
 jq -e --arg role "${repo_dir}/team/implementer.md" \
     '.instructions == [$role] and (.model == null)' \
@@ -639,6 +656,16 @@ jq -e --arg role "${repo_dir}/team/implementer.md" \
 expect_codex_log "Runtime recovery state: task-state=unknown"
 [ "$(count_codex_resumes)" -eq 1 ] ||
     fail "a new Codex session should open exactly one TUI resume"
+
+# Removing the shared file rebuilds it from existing CLI labels.
+rm -f "${tmp}/shared-state/state.json"
+run_team_capture
+[ "$(shared_value implementer session)" = "$implementer_session" ] ||
+    fail "implementer session was not migrated from labels"
+[ "$(shared_value planner session)" = "$planner_session" ] ||
+    fail "planner session was not migrated from labels"
+expect_team_log "migrated implementer session"
+expect_team_log "migrated planner session"
 
 # The role files define the lightweight protocol and the recovery safeguards.
 planner_role="${repo_dir}/team/planner.md"
@@ -819,7 +846,12 @@ expect_team_log "keeping previous planner terminal ${old_planner_address}"
     fail "planner resume should use one explicit TUI resume"
 
 # An in-progress task keeps its state and produces a recovery warning.
-hc label planner task-state=in_progress >/dev/null
+AGENTS_TEAM_BACKEND=cli \
+AGENTS_TEAM_STATE_FILE="${tmp}/shared-state/state.json" \
+AGENTS_TEAM_WORKSPACE_ID="/host/projects/team" \
+AGENTS_TEAM_HC="${bin}/hc" \
+    "${repo_dir}/team/teamctl" label planner task-state=in_progress ||
+    fail "teamctl CLI label did not record in-progress state"
 finish_terminal planner
 run_team_capture
 [ "$(label_of planner task-state)" = "in_progress" ] ||
@@ -828,6 +860,8 @@ expect_team_log "task state=in_progress"
 expect_team_log "explicit confirmation"
 expect_codex_log "Runtime recovery state: task-state=in_progress"
 expect_no_codex_log "This is a session bootstrap."
+[ "$(shared_value planner task-state)" = "in_progress" ] ||
+    fail "shared planner task state was not preserved on resume"
 
 # Fresh mode creates new native conversations, keeps the old histories, and
 # does not delete or replace live terminals.
@@ -865,6 +899,9 @@ expect_team_log "fresh mode: keeping live planner terminal"
 finish_terminal implementer
 old_wrong_address=$(address_of implementer)
 old_wrong_session=$implementer_fresh
+jq 'del(.workspaces["/host/projects/team"].implementer)' \
+    "${tmp}/shared-state/state.json" >"${tmp}/shared-state/state.json.new"
+mv "${tmp}/shared-state/state.json.new" "${tmp}/shared-state/state.json"
 hc label implementer workspace=/host/projects/other >/dev/null
 run_team_capture
 new_wrong_session=$(label_of implementer session)
@@ -916,6 +953,9 @@ ambiguous_original=$(label_of implementer session)
 add_terminal implementer finished \
     '{"team":"agents","role":"implementer","workspace":"/host/projects/team","session":"ses_duplicate0000000000000000","task-state":"completed"}' \
     t900
+jq 'del(.workspaces["/host/projects/team"].implementer)' \
+    "${tmp}/shared-state/state.json" >"${tmp}/shared-state/state.json.new"
+mv "${tmp}/shared-state/state.json.new" "${tmp}/shared-state/state.json"
 run_team_capture
 ambiguous_new=$(label_of implementer session)
 [ "$ambiguous_new" != "$ambiguous_original" ] ||

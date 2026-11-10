@@ -77,6 +77,7 @@ RUN mkdir -p \
         /home/${USERNAME}/.local/state/herdr-core \
         /home/${USERNAME}/.config/herdr \
         /home/${USERNAME}/.local/state/herdr \
+        /home/${USERNAME}/.local/state/agents-team \
         /home/${USERNAME}/.ssh \
     && chown -R "${USERNAME}:${USERNAME}" \
         /workspace \
