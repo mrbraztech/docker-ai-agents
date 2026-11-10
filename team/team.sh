@@ -22,6 +22,8 @@ RUNTIME_DIR="${AGENTS_TEAM_RUNTIME_DIR:-${TMPDIR:-/tmp}/agents-team}"
 
 PLANNER_MODEL="${AGENTS_TEAM_PLANNER_MODEL:-}"
 IMPLEMENTER_MODEL="${AGENTS_TEAM_IMPLEMENTER_MODEL:-}"
+CODEX_SANDBOX_MODE="${AGENTS_TEAM_CODEX_SANDBOX:-auto}"
+CODEX_SANDBOX_ARGS=()
 
 FRESH=0
 TASK_STATE_LABEL="task-state"
@@ -38,6 +40,33 @@ die() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+configure_codex_sandbox() {
+    case "$CODEX_SANDBOX_MODE" in
+        auto)
+            # Codex's Linux sandbox uses bubblewrap user namespaces. Some
+            # container hosts block them with seccomp; Codex then cannot run
+            # even read-only shell commands. The container is already the
+            # isolation boundary, so fall back to danger-full-access there.
+            if command -v bwrap >/dev/null 2>&1 &&
+                bwrap --unshare-user --dev-bind / / true >/dev/null 2>&1; then
+                CODEX_SANDBOX_ARGS=()
+            else
+                log "Codex sandbox unavailable (bubblewrap user namespaces blocked); using danger-full-access inside the container"
+                CODEX_SANDBOX_ARGS=(--sandbox danger-full-access)
+            fi
+            ;;
+        default)
+            CODEX_SANDBOX_ARGS=()
+            ;;
+        read-only | workspace-write | danger-full-access)
+            CODEX_SANDBOX_ARGS=(--sandbox "$CODEX_SANDBOX_MODE")
+            ;;
+        *)
+            die "unknown Codex sandbox mode: ${CODEX_SANDBOX_MODE}"
+            ;;
+    esac
 }
 
 json_field() {
@@ -239,7 +268,7 @@ bootstrap_codex_session() {
         --json
         -C "$WORKSPACE"
         --skip-git-repo-check
-        --sandbox read-only
+        "${CODEX_SANDBOX_ARGS[@]}"
         -c "developer_instructions=${instructions}"
     )
 
@@ -352,6 +381,7 @@ start_planner() {
         # commands run inside the Herdr terminal.
         --no-daemon
         -C "$WORKSPACE"
+        "${CODEX_SANDBOX_ARGS[@]}"
         -c "developer_instructions=${instructions}"
     )
 
@@ -636,6 +666,8 @@ main() {
     require_command opencode
     require_command timeout
     require_command od
+
+    configure_codex_sandbox
 
     [ -r "$PLANNER_ROLE" ] || die "planner role file not found: $PLANNER_ROLE"
     [ -r "$IMPLEMENTER_ROLE" ] || die "implementer role file not found: $IMPLEMENTER_ROLE"

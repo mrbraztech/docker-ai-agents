@@ -68,6 +68,9 @@ Environment:
                         Model for the team planner (Codex).
   AGENTS_TEAM_IMPLEMENTER_MODEL
                         Model for the team implementer (OpenCode).
+  AGENTS_TEAM_CODEX_SANDBOX
+                        Codex sandbox: auto, default, read-only,
+                        workspace-write, or danger-full-access.
 
 Examples:
   agents
@@ -491,7 +494,8 @@ export SSH_AUTH_SOCK
 : "${GH_TOKEN:=}"
 : "${AGENTS_TEAM_PLANNER_MODEL:=}"
 : "${AGENTS_TEAM_IMPLEMENTER_MODEL:=}"
-export DISPLAY GH_TOKEN AGENTS_TEAM_PLANNER_MODEL AGENTS_TEAM_IMPLEMENTER_MODEL
+: "${AGENTS_TEAM_CODEX_SANDBOX:=auto}"
+export DISPLAY GH_TOKEN AGENTS_TEAM_PLANNER_MODEL AGENTS_TEAM_IMPLEMENTER_MODEL AGENTS_TEAM_CODEX_SANDBOX
 
 ensure_host_dirs
 
@@ -508,6 +512,7 @@ if [ "$team_mode" -eq 1 ]; then
         -f "$compose_file" \
         --project-directory "$compose_dir" \
         run --rm -e "AGENTS_TEAM_WORKSPACE_ID=$workspace_dir" \
+        -e "AGENTS_TEAM_CODEX_SANDBOX=$AGENTS_TEAM_CODEX_SANDBOX" \
         "$service" "$command" "$@"
 fi
 

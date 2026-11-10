@@ -272,6 +272,19 @@ The values are provider-neutral. Use the model identifier accepted by the
 corresponding CLI or config, for example a `provider/model` value for OpenCode.
 No provider-specific model name is hardcoded in the repository.
 
+#### Codex sandbox
+
+Codex uses bubblewrap user namespaces for its Linux shell sandbox. Some Docker
+hosts block those namespaces with seccomp; Codex then fails before running even
+read-only commands such as reading a documentation file.
+
+By default (`AGENTS_TEAM_CODEX_SANDBOX=auto`), the team launcher probes
+bubblewrap. If the probe fails, it starts Codex with
+`--sandbox danger-full-access` inside the container and logs a warning. The
+container remains the isolation boundary. Set `AGENTS_TEAM_CODEX_SANDBOX` to
+`default`, `read-only`, `workspace-write`, or `danger-full-access` to override
+the probe.
+
 #### Persistence and compatibility
 
 Team mode reuses the existing `herdr-config` and `herdr-state` Docker named
@@ -296,9 +309,11 @@ security settings.
 Codex is instructed not to edit project files. This is a prompt-level
 behavioral rule, not a filesystem sandbox. The repository does not implement or
 verify technical write isolation for the Codex process, and prompt instructions
-do not provide filesystem isolation. Treat Codex write isolation as unresolved,
-review the changes, and use the implementer as the role that performs edits and
-tests.
+do not provide filesystem isolation. When the sandbox probe falls back to
+`danger-full-access`, Codex runs without its own filesystem sandbox; only the
+container boundary and the role instructions limit it. Treat Codex write
+isolation as unresolved, review the changes, and use the implementer as the
+role that performs edits and tests.
 
 ## Mounts and persistence
 
@@ -374,6 +389,7 @@ Additional variables are forwarded from the host environment:
 | `AGENTS_OPENCODE_STANDALONE` | Set to `0` to use OpenCode's shared background service.  |
 | `AGENTS_TEAM_PLANNER_MODEL` | Model passed to the team planner (Codex) with `-m`.      |
 | `AGENTS_TEAM_IMPLEMENTER_MODEL` | Model written to the team implementer (OpenCode) config. |
+| `AGENTS_TEAM_CODEX_SANDBOX` | Codex sandbox mode: `auto` (default), `default`, `read-only`, `workspace-write`, or `danger-full-access`. |
 | `AGENTS_TEAM_WORKSPACE_ID` | Internal: canonical host workspace passed by `agents.sh team`. |
 
 If a `WORKSPACE_DIR` is already exported, `agents.sh` uses it as the workspace

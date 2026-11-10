@@ -413,7 +413,12 @@ case "$command_name" in
 esac
 STUB
 
-chmod 0755 "${bin}/hc" "${bin}/codex" "${bin}/opencode"
+cat >"${bin}/bwrap" <<'STUB'
+#!/usr/bin/env bash
+[ "${STUB_BWRAP_OK:-0}" = "1" ]
+STUB
+
+chmod 0755 "${bin}/hc" "${bin}/codex" "${bin}/opencode" "${bin}/bwrap"
 mkdir -p "${tmp}/codex-state" "${tmp}/opencode-state"
 
 export PATH="${bin}:${PATH}"
@@ -427,6 +432,7 @@ export AGENTS_TEAM_DIR="${repo_dir}/team"
 export AGENTS_TEAM_WORKSPACE="${repo_dir}"
 export AGENTS_TEAM_WORKSPACE_ID="/host/projects/team"
 export AGENTS_TEAM_RUNTIME_DIR="${runtime}"
+export AGENTS_TEAM_CODEX_SANDBOX="danger-full-access"
 
 unset AGENTS_TEAM_PLANNER_MODEL || true
 unset AGENTS_TEAM_IMPLEMENTER_MODEL || true
@@ -569,7 +575,7 @@ reset_state() {
         "${tmp}/opencode-state/sessions"
     unset STUB_HC_GET_JSON STUB_HC_STATUS STUB_HC_RUN_FAIL \
         STUB_HC_RUN_FINISHED STUB_HC_STRIP_RUN_LABELS STUB_HC_LABEL_FAIL \
-        STUB_HC_STATE_OVERRIDE STUB_HC_LS_FAIL \
+        STUB_HC_STATE_OVERRIDE STUB_HC_LS_FAIL STUB_BWRAP_OK \
         STUB_CODEX_BOOTSTRAP_FAIL STUB_CODEX_BOOTSTRAP_NO_THREAD \
         STUB_CODEX_BOOTSTRAP_NO_COMPLETE STUB_CODEX_RESUME_FAIL \
         STUB_CODEX_THREAD_ID \
@@ -588,7 +594,7 @@ expect_log "hc run --bg --name planner"
 expect_log "OPENCODE_CONFIG="
 expect_opencode_log "opencode --standalone --session ses_"
 expect_codex_log "codex exec --json"
-expect_codex_log "--sandbox read-only"
+expect_codex_log "--sandbox danger-full-access"
 expect_codex_log "This is a session bootstrap."
 expect_codex_log "developer_instructions="
 expect_codex_log "codex resume "
@@ -1037,5 +1043,25 @@ expect_no_log "hc rm "
 [ "$(address_of planner)" = "$planner_conflict_address" ] ||
     fail "fresh mode replaced a conflicting live planner"
 expect_team_log "fresh mode: keeping live planner terminal"
+
+# Auto sandbox detection falls back to danger-full-access when bubblewrap
+# cannot create user namespaces, and leaves Codex's default mode alone when it
+# can.
+export AGENTS_TEAM_CODEX_SANDBOX=auto
+reset_state
+export STUB_BWRAP_OK=0
+run_team_capture
+expect_team_log "Codex sandbox unavailable"
+expect_codex_log "--sandbox danger-full-access"
+unset STUB_BWRAP_OK || true
+
+reset_state
+export STUB_BWRAP_OK=1
+run_team_capture
+if grep -Fq -- "--sandbox " "$codex_log"; then
+    fail "auto sandbox mode overrode Codex when bubblewrap was available"
+fi
+unset STUB_BWRAP_OK || true
+export AGENTS_TEAM_CODEX_SANDBOX="danger-full-access"
 
 printf 'team tests passed\n'
