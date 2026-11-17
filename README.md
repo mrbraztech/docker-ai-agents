@@ -179,6 +179,16 @@ unique path is the active workspace. Existing OpenCode sessions created under
 `/workspace` stay in the database but no longer appear in the new project's
 session list.
 
+Both team backends ensure the shared OpenCode CLI configuration at
+`~/.config/opencode/cli.json` (or `$XDG_CONFIG_HOME/opencode/cli.json`) sets
+`tabs.scope` to `cwd`. Existing CLI settings are preserved, including plugins,
+keybindings, and other `tabs` options. If `cli.json` exists but is not a valid
+JSON object, the launcher stops without replacing it. Tabs therefore stay
+scoped to the active workspace even though the configuration and data
+directories are shared mounts.
+This persistent setting is written by `agents team`; the direct `agents
+opencode` launcher does not modify it.
+
 The planner must show the plan and ask for explicit approval before any
 implementation handoff. The approval is part of the planner role instructions,
 not a separate approval service.
@@ -259,7 +269,9 @@ another session, or an automatic replay. Run `agents team --fresh` when a new
 conversation is wanted. For a new ID created by the neutral bootstrap,
 `thread.started` plus `turn.completed` is evidence that Codex persisted the
 session. OpenCode session IDs are checked against `opencode session list`
-before reuse; a missing ID starts a new conversation.
+before reuse, and the listed session must belong to the current workspace
+directory; a missing ID or an ID associated with another workspace starts a new
+conversation.
 
 When a terminal ends during a task, the native conversation remains available.
 The launcher does not send the previous task again. The planner records

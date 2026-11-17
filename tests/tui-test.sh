@@ -159,8 +159,14 @@ case "${1:-}" in
     session)
         if [ "${2:-}" = "list" ]; then
             if [ -f "${STUB_OPENCODE_STATE:?}/sessions" ]; then
-                jq -R -s 'split("\n") | map(select(length > 0)) | map({id: .})' \
-                    <"${STUB_OPENCODE_STATE}/sessions"
+                jq -R -s --arg workspace "${STUB_OPENCODE_WORKSPACE:-}" '
+                    split("\n") | map(select(length > 0)) |
+                    map(if contains("\t") then
+                            (split("\t") | {id: .[0], directory: .[1]})
+                        else
+                            {id: ., directory: $workspace}
+                        end)
+                ' <"${STUB_OPENCODE_STATE}/sessions"
             else
                 printf '[]\n'
             fi
@@ -203,12 +209,14 @@ mkdir -p "${tmp}/codex-state" "${tmp}/opencode-state"
 
 export PATH="${bin}:${PATH}"
 export HOME="${tmp}/home"
+unset XDG_CONFIG_HOME || true
 export STUB_HERDR_LOG="$herdr_log"
 export STUB_HERDR_STATE="$herdr_state"
 export STUB_CODEX_LOG="$codex_log"
 export STUB_CODEX_STATE="${tmp}/codex-state"
 export STUB_OPENCODE_LOG="$opencode_log"
 export STUB_OPENCODE_STATE="${tmp}/opencode-state"
+export STUB_OPENCODE_WORKSPACE="${repo_dir}"
 export STUB_HC_LOG="$hc_log"
 export AGENTS_TEAM_HC="${bin}/hc"
 export AGENTS_TEAM_HERDR="${bin}/herdr"
@@ -293,12 +301,50 @@ implementer_session=$(state_value implementer session)
 grep -Fq -- "--session test-session" "$herdr_log" ||
     fail "TUI attach did not use the named session"
 
-# A second start resumes both IDs without a new Codex bootstrap.
+cli_config="${HOME}/.config/opencode/cli.json"
+jq -e '.tabs.scope == "cwd"' "$cli_config" >/dev/null ||
+    fail "TUI did not create tabs.scope=cwd"
+
+# A second start resumes both IDs without a new Codex bootstrap. It also
+# preserves unrelated settings in the existing CLI config.
+cat >"$cli_config" <<'JSON'
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["file:///existing/tui-test-plugin.js"],
+  "tabs": {"mode": "on", "layout": "vertical"}
+}
+JSON
 printf '%s\n' "$implementer_session" >>"${tmp}/opencode-state/sessions"
 run_tui
+jq -e '
+    .tabs.scope == "cwd" and
+    .tabs.mode == "on" and
+    .tabs.layout == "vertical" and
+    .plugins == ["file:///existing/tui-test-plugin.js"]
+' "$cli_config" >/dev/null ||
+    fail "TUI did not set tabs.scope=cwd while preserving existing settings"
 expect_herdr "agent start planner --kind codex --pane w1:p1 -- resume ${planner_session}"
 expect_no_codex "codex exec"
 expect_herdr "agent start implementer --kind opencode --pane w1:p2 -- --standalone --session ${implementer_session}"
+
+# A session ID from another workspace is not resumed, even though it appears
+# in the OpenCode session list.
+foreign_workspace_session="ses_otherworkspace000000000"
+printf '%s\t%s\n' "$foreign_workspace_session" "/host/projects/other" \
+    >>"${tmp}/opencode-state/sessions"
+jq --arg workspace "$AGENTS_TEAM_WORKSPACE_ID" \
+    --arg session "$foreign_workspace_session" '
+    .workspaces[$workspace].implementer.session = $session
+' "$state/state.json" >"$state/state.json.new"
+mv "$state/state.json.new" "$state/state.json"
+run_tui
+[ "$(state_value implementer session)" != "$foreign_workspace_session" ] ||
+    fail "TUI resumed a session from another workspace"
+grep -Fq "belongs to another workspace" "$tui_log" ||
+    fail "TUI did not report the cross-workspace session"
+if grep -Fq -- "--session ${foreign_workspace_session}" "$herdr_log"; then
+    fail "TUI started OpenCode with a session from another workspace"
+fi
 
 # Fresh mode ignores saved IDs and generates new ones.
 run_tui --fresh
@@ -389,5 +435,24 @@ grep -Fq "hc label implementer task-state=in_progress" "$hc_log" ||
 ) || fail "teamctl CLI send failed"
 grep -Fq "hc send implementer hello" "$hc_log" ||
     fail "teamctl CLI send did not use hc"
+
+# An existing but invalid or non-object CLI config is never replaced. The TUI
+# launcher fails clearly instead of discarding settings it cannot parse.
+cli_config="${HOME}/.config/opencode/cli.json"
+for invalid_config in '{"tabs":' '[]'; do
+    printf '%s\n' "$invalid_config" >"$cli_config"
+    if run_tui; then
+        fail "TUI accepted an invalid CLI config"
+    fi
+    grep -Fq "not a valid JSON object" "$tui_log" ||
+        fail "TUI did not report the invalid CLI config"
+    grep -Fq "refusing to replace it" "$tui_log" ||
+        fail "TUI did not refuse to replace the invalid CLI config"
+    [ "$(cat "$cli_config")" = "$invalid_config" ] ||
+        fail "TUI replaced an invalid CLI config"
+    if grep -Fq "agent start" "$herdr_log"; then
+        fail "TUI started agents with an invalid CLI config"
+    fi
+done
 
 printf 'tui tests passed\n'

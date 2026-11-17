@@ -195,14 +195,30 @@ new_opencode_session() {
 }
 
 opencode_session_exists() {
-    local session=$1 output
+    local session=$1 output workspace real_workspace
+    workspace=$WORKSPACE
+    real_workspace=$(cd "$WORKSPACE" && pwd -P) || return 1
     if ! output=$(cd "$WORKSPACE" &&
         opencode session list --format json -n 1000 2>/dev/null); then
         return 1
     fi
-    printf '%s' "$output" |
-        jq -e --arg session "$session" 'any(.[]; .id == $session)' \
-            >/dev/null 2>&1
+    if printf '%s' "$output" |
+        jq -e --arg session "$session" \
+            --arg workspace "$workspace" \
+            --arg real_workspace "$real_workspace" '
+            any(.[];
+                .id == $session and
+                ((.directory // "") == $workspace or
+                 (.directory // "") == $real_workspace))' \
+            >/dev/null 2>&1; then
+        return 0
+    fi
+    if printf '%s' "$output" |
+        jq -e --arg session "$session" \
+            'any(.[]; .id == $session)' >/dev/null 2>&1; then
+        log "OpenCode session ${session} belongs to another workspace; refusing to resume it"
+    fi
+    return 1
 }
 
 bootstrap_codex_session() {
@@ -260,6 +276,31 @@ write_opencode_config() {
         >"$path"
 }
 
+ensure_opencode_cli_config() {
+    local path content temporary
+
+    path="${XDG_CONFIG_HOME:-${HOME}/.config}/opencode/cli.json"
+    mkdir -p "$(dirname "$path")"
+
+    if [ -f "$path" ]; then
+        content=$(jq -c '
+            if type == "object" then
+                .tabs = ((.tabs // {}) |
+                    if type == "object" then . else {} end) |
+                .tabs.scope = "cwd"
+            else
+                error("CLI config is not a JSON object")
+            end' "$path" 2>/dev/null) ||
+            die "OpenCode CLI config is not a valid JSON object: ${path}; refusing to replace it"
+    else
+        content='{"$schema":"https://opencode.ai/v2/cli.json","tabs":{"scope":"cwd"}}'
+    fi
+
+    temporary=$(mktemp "${path}.XXXXXX")
+    printf '%s\n' "$content" >"$temporary"
+    mv -f "$temporary" "$path"
+}
+
 cleanup() {
     local status=$?
     herdr session stop "$HERDR_SESSION" >/dev/null 2>&1 || true
@@ -312,6 +353,7 @@ main() {
     [ -r "$IMPLEMENTER_ROLE" ] || die "implementer role file not found: $IMPLEMENTER_ROLE"
 
     configure_codex_sandbox
+    ensure_opencode_cli_config
     mkdir -p "$RUNTIME_DIR" "$STATE_DIR"
     write_opencode_config "${RUNTIME_DIR}/opencode.json" \
         "$IMPLEMENTER_ROLE" "$IMPLEMENTER_MODEL"

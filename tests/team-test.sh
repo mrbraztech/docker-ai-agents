@@ -14,12 +14,13 @@ trap 'rm -rf "$tmp"' EXIT
 bin="${tmp}/bin"
 state="${tmp}/state"
 runtime="${tmp}/runtime"
+home="${tmp}/home"
 log="${tmp}/hc.log"
 codex_log="${tmp}/codex.log"
 opencode_log="${tmp}/opencode.log"
 team_log="${tmp}/team.log"
 
-mkdir -p "$bin" "$state" "$runtime"
+mkdir -p "$bin" "$state" "$runtime" "$home"
 
 cat >"${bin}/hc" <<'STUB'
 #!/usr/bin/env bash
@@ -369,9 +370,14 @@ case "$command_name" in
             list)
                 [ -z "${STUB_OPENCODE_LIST_FAIL:-}" ] || exit 1
                 if [ -f "${STUB_OPENCODE_STATE:?}/sessions" ]; then
-                    jq -R -s '
+                    jq -R -s --arg workspace "${STUB_OPENCODE_WORKSPACE:-}" '
                         split("\n") | map(select(length > 0)) |
-                        map({id: .})
+                        map(if contains("\t") then
+                                (split("\t") |
+                                 {id: .[0], directory: .[1]})
+                            else
+                                {id: ., directory: $workspace}
+                            end)
                     ' <"${STUB_OPENCODE_STATE}/sessions"
                 else
                     printf '[]\n'
@@ -422,12 +428,15 @@ chmod 0755 "${bin}/hc" "${bin}/codex" "${bin}/opencode" "${bin}/bwrap"
 mkdir -p "${tmp}/codex-state" "${tmp}/opencode-state"
 
 export PATH="${bin}:${PATH}"
+export HOME="$home"
+unset XDG_CONFIG_HOME || true
 export STUB_HC_STATE="${state}"
 export STUB_HC_LOG="${log}"
 export STUB_CODEX_STATE="${tmp}/codex-state"
 export STUB_CODEX_LOG="${codex_log}"
 export STUB_OPENCODE_STATE="${tmp}/opencode-state"
 export STUB_OPENCODE_LOG="${opencode_log}"
+export STUB_OPENCODE_WORKSPACE="${repo_dir}"
 export AGENTS_TEAM_DIR="${repo_dir}/team"
 export AGENTS_TEAM_WORKSPACE="${repo_dir}"
 export AGENTS_TEAM_WORKSPACE_ID="/host/projects/team"
@@ -437,6 +446,16 @@ export AGENTS_TEAM_STATE_DIR="${tmp}/shared-state"
 
 unset AGENTS_TEAM_PLANNER_MODEL || true
 unset AGENTS_TEAM_IMPLEMENTER_MODEL || true
+unset AGENTS_TEAM_BACKEND AGENTS_TEAM_HERDR_SESSION || true
+
+mkdir -p "${HOME}/.config/opencode"
+cat >"${HOME}/.config/opencode/cli.json" <<'JSON'
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["file:///existing/team-test-plugin.js"],
+  "tabs": {"mode": "on", "layout": "vertical"}
+}
+JSON
 
 fail() {
     printf 'team test failed: %s\n' "$*" >&2
@@ -653,6 +672,13 @@ jq -e --arg role "${repo_dir}/team/implementer.md" \
     '.instructions == [$role] and (.model == null)' \
     "${runtime}/opencode.json" >/dev/null ||
     fail "implementer config does not load the role file or unexpectedly sets a model"
+jq -e '
+    .tabs.scope == "cwd" and
+    .tabs.mode == "on" and
+    .tabs.layout == "vertical" and
+    .plugins == ["file:///existing/team-test-plugin.js"]
+' "${HOME}/.config/opencode/cli.json" >/dev/null ||
+    fail "CLI config did not set tabs.scope=cwd while preserving existing settings"
 expect_codex_log "Runtime recovery state: task-state=unknown"
 [ "$(count_codex_resumes)" -eq 1 ] ||
     fail "a new Codex session should open exactly one TUI resume"
@@ -946,6 +972,23 @@ expect_team_log "is not available"
 [ ! -f "${state}/${old_missing_opencode_address}.json" ] ||
     fail "the stale implementer record was not removed after transfer"
 
+# An ID that exists in the global OpenCode session list but belongs to another
+# workspace directory is not resumed.
+finish_terminal implementer
+foreign_workspace_session="ses_otherworkspace000000000"
+printf '%s\t%s\n' "$foreign_workspace_session" "/host/projects/other" \
+    >>"${tmp}/opencode-state/sessions"
+jq --arg workspace "/host/projects/team" \
+    --arg session "$foreign_workspace_session" '
+    .workspaces[$workspace].implementer.session = $session
+' "${tmp}/shared-state/state.json" >"${tmp}/shared-state/state.json.new"
+mv "${tmp}/shared-state/state.json.new" "${tmp}/shared-state/state.json"
+run_team_capture
+[ "$(label_of implementer session)" != "$foreign_workspace_session" ] ||
+    fail "a session from another workspace was resumed"
+expect_team_log "belongs to another workspace"
+expect_no_opencode_log "opencode --standalone --session ${foreign_workspace_session}"
+
 # Multiple saved records for one role with different IDs are ambiguous; the
 # launcher must not choose one arbitrarily.
 finish_terminal implementer
@@ -1103,5 +1146,20 @@ if grep -Fq -- "--sandbox " "$codex_log"; then
 fi
 unset STUB_BWRAP_OK || true
 export AGENTS_TEAM_CODEX_SANDBOX="danger-full-access"
+
+# An existing but invalid or non-object CLI config is never replaced. The
+# launcher fails clearly instead of discarding settings it cannot parse.
+for invalid_config in '{"tabs":' '[]'; do
+    printf '%s\n' "$invalid_config" >"${HOME}/.config/opencode/cli.json"
+    if run_team_capture; then
+        fail "an invalid CLI config was accepted"
+    fi
+    expect_team_log "not a valid JSON object"
+    expect_team_log "refusing to replace it"
+    [ "$(cat "${HOME}/.config/opencode/cli.json")" = "$invalid_config" ] ||
+        fail "an invalid CLI config was replaced"
+    [ "$(count_runs)" -eq 0 ] ||
+        fail "roles were launched with an invalid CLI config"
+done
 
 printf 'team tests passed\n'
